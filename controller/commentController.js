@@ -1,20 +1,28 @@
-import pool from "../db.js";
+import commentModel from "../model/commentModel.js";
+import { models } from "../sequelizeInit.js";
+
+const { Comment } = models;
 
 export const postComment = async (req, res) => {
   const { postId } = req.params;
-  const { content, parentId = null } = req.body;
+  const { content, parentId = commentModel.parent_id } = req.body;
+
+  if (!content) {
+    return res.status(400).json({ error: "Content is required" });
+  }
 
   try {
-    await pool.query(
-      `INSERT INTO comments (post_id, user_id, content, parent_id)
-       VALUES ($1, $2, $3, $4)`,
-      [postId, req.user.id, content, parentId]
-    );
+    const comment = await Comment.create({
+      post_id: postId,
+      user_id: req.user.id,
+      content,
+      parent_id: parentId,
+    });
 
-    res.status(201).json({ message: "Comment posted successfully" });
+    res.status(201).json({ message: "Comment posted", comment });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Error posting comment" });
+    console.error("Error posting comment:", err);
+    res.status(500).json({ error: "Failed to post comment" });
   }
 };
 
@@ -22,20 +30,15 @@ export const getCommentsByPost = async (req, res) => {
   const { postId } = req.params;
 
   try {
-    const result = await pool.query(
-      `SELECT c.*, u.username
-       FROM comments c
-       JOIN users u ON c.user_id = u.id
-       WHERE c.post_id = $1
-       ORDER BY c.created_at ASC`,
-      [postId]
-    );
+    const rawComments = await Comment.findAll({
+      where: { post_id: postId },
+      order: [["createdAt", "ASC"]],
+    });
 
-    // Nest replies under parent comments
-    const comments = result.rows;
-    const nested = [];
+    const comments = rawComments.map((comment) => comment.get({ plain: true }));
 
     const commentMap = {};
+    const nestedComments = [];
 
     comments.forEach((comment) => {
       comment.replies = [];
@@ -44,15 +47,18 @@ export const getCommentsByPost = async (req, res) => {
 
     comments.forEach((comment) => {
       if (comment.parent_id) {
-        commentMap[comment.parent_id]?.replies.push(comment);
+        const parent = commentMap[comment.parent_id];
+        if (parent) {
+          parent.replies.push(comment);
+        }
       } else {
-        nested.push(comment);
+        nestedComments.push(comment);
       }
     });
 
-    res.json({ comments: nested });
+    res.status(200).json({ comments: nestedComments });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Error fetching comments" });
+    console.error("Error fetching comments:", err);
+    res.status(500).json({ error: "Failed to fetch comments" });
   }
 };
